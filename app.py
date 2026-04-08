@@ -12,24 +12,27 @@ def extrair_texto_pdf(file):
 
 def extrair_itens(texto):
     itens = []
+
     linhas = texto.split("\n")
 
     for linha in linhas:
-        if "R$" in linha and ("Seguradora" in linha or "Oficina" in linha):
-            try:
-                valor = None
-                partes = linha.split()
+        if "R$" in linha:
 
-                for i, p in enumerate(partes):
-                    if p == "R$":
-                        valor = float(partes[i+1].replace(",", "."))
+            try:
+                descricao = linha
+
+                valor = None
+                match = re.search(r'R\$\s*([\d,.]+)', linha)
+                if match:
+                    valor = float(match.group(1).replace(".", "").replace(",", "."))
 
                 itens.append({
-                    "linha": linha,
+                    "descricao": descricao,
                     "valor": valor
                 })
+
             except:
-                pass
+                continue
 
     return itens
 
@@ -40,20 +43,24 @@ def comparar(oficina, seguradora):
         encontrou = False
 
         for item_seg in seguradora:
-            if item_of["linha"][:40] == item_seg["linha"][:40]:
+
+            if item_of["descricao"][:50] == item_seg["descricao"][:50]:
                 encontrou = True
 
                 if item_of["valor"] != item_seg["valor"]:
                     divergencias.append({
                         "tipo": "VALOR_DIFERENTE",
-                        "oficina": item_of["linha"],
-                        "seguradora": item_seg["linha"]
+                        "descricao": item_of["descricao"],
+                        "valor_oficina": item_of["valor"],
+                        "valor_seguradora": item_seg["valor"],
+                        "diferenca": round(item_of["valor"] - item_seg["valor"], 2)
                     })
 
         if not encontrou:
             divergencias.append({
                 "tipo": "NAO_ENCONTRADO",
-                "oficina": item_of["linha"]
+                "descricao": item_of["descricao"],
+                "valor_oficina": item_of["valor"]
             })
 
     return divergencias
