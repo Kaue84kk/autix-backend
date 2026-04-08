@@ -44,7 +44,7 @@ def comparar(oficina, seguradora):
 
         for item_seg in seguradora:
 
-            if item_of["descricao"][:50] == item_seg["descricao"][:50]:
+            if item_of["descricao"].split()[-3:] == item_seg["descricao"].split()[-3:]:
                 encontrou = True
 
                 if item_of["valor"] != item_seg["valor"]:
