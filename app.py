@@ -16,31 +16,30 @@ def extrair_texto_pdf(file):
 
 
 # =========================
-# LIMPEZA INTELIGENTE (V6 BASE)
+# IDENTIFICAR LINHA DE PEÇA REAL
 # =========================
 def linha_valida(linha):
 
-    # ignora linhas vazias
     if not linha.strip():
         return False
 
-    # ignora resumos financeiros
-    if "Total" in linha or "Bruto" in linha or "Líquido" in linha:
+    # precisa ter código grande
+    if not re.search(r'\b\d{6,}\b', linha):
         return False
 
-    # ignora linhas gigantes com vários valores
-    if len(re.findall(r'\d+[.,]\d{2}', linha)) > 3:
+    # precisa ter valor monetário
+    if not re.search(r'R\$\s*\d', linha):
         return False
 
-    # ignora porcentagem
-    if "%" in linha:
+    # ignora resumo
+    if any(x in linha for x in ["Total", "Bruto", "Líquido", "%"]):
         return False
 
     return True
 
 
 # =========================
-# EXTRAIR ITENS
+# EXTRAIR ITENS (VERSÃO LIMPA)
 # =========================
 def extrair_itens(texto):
     itens = []
@@ -51,23 +50,30 @@ def extrair_itens(texto):
         if not linha_valida(linha):
             continue
 
-        # ignora R&I (operação)
-        if "R&I" in linha:
-            continue
-
         try:
-            match = re.search(r'(\d+[.,]\d{2})', linha)
-            if not match:
+            # código
+            codigo = re.search(r'\b\d{6,}\b', linha).group()
+
+            # valor (último valor da linha)
+            valores = re.findall(r'R\$\s*([\d.,]+)', linha)
+            if not valores:
                 continue
 
-            valor = float(match.group(1).replace(".", "").replace(",", "."))
+            valor = float(valores[-1].replace(".", "").replace(",", "."))
 
-            codigo_match = re.search(r'\b\d{6,}\b', linha)
-            codigo = codigo_match.group(0) if codigo_match else linha[:40]
+            # descrição limpa
+            descricao = linha
 
-            # limpa descrição
-            descricao = re.sub(r'\d+[.,]\d{2}', '', linha)
-            descricao = re.sub(r'[^\w\s/.-]', '', descricao).strip()
+            # remove código
+            descricao = re.sub(r'\b\d{6,}\b', '', descricao)
+
+            # remove valores
+            descricao = re.sub(r'R\$\s*[\d.,]+', '', descricao)
+
+            # remove ruídos
+            descricao = re.sub(r'[TPR\-]+', '', descricao)
+
+            descricao = re.sub(r'\s+', ' ', descricao).strip()
 
             itens.append({
                 "codigo": codigo,
@@ -87,22 +93,21 @@ def extrair_itens(texto):
 def comparar(oficina, seguradora):
     divergencias = []
 
+    mapa_seg = {item["codigo"]: item for item in seguradora}
+
     for item_of in oficina:
-        encontrado = False
 
-        for item_seg in seguradora:
-            if item_of["codigo"] == item_seg["codigo"]:
-                encontrado = True
+        item_seg = mapa_seg.get(item_of["codigo"])
 
-                if abs(item_of["valor"] - item_seg["valor"]) > 0.01:
-                    divergencias.append({
-                        "tipo": "VALOR_DIFERENTE",
-                        "descricao": item_of["descricao"],
-                        "oficina": item_of["valor"],
-                        "seguradora": item_seg["valor"]
-                    })
-
-        if not encontrado:
+        if item_seg:
+            if abs(item_of["valor"] - item_seg["valor"]) > 0.01:
+                divergencias.append({
+                    "tipo": "VALOR_DIFERENTE",
+                    "descricao": item_of["descricao"],
+                    "oficina": item_of["valor"],
+                    "seguradora": item_seg["valor"]
+                })
+        else:
             divergencias.append({
                 "tipo": "NAO_ENCONTRADO",
                 "descricao": item_of["descricao"],
@@ -113,7 +118,7 @@ def comparar(oficina, seguradora):
 
 
 # =========================
-# FORMATAR SAÍDA PROFISSIONAL
+# FORMATAÇÃO PROFISSIONAL
 # =========================
 def formatar_saida(divergencias):
     resultado = []
@@ -121,23 +126,23 @@ def formatar_saida(divergencias):
     for d in divergencias:
 
         if d["tipo"] == "VALOR_DIFERENTE":
-            diferenca = d["oficina"] - d["seguradora"]
+            diff = d["oficina"] - d["seguradora"]
 
             resultado.append({
                 "tipo": "DIVERGENCIA_DE_VALOR",
-                "descricao": d["descricao"],
+                "item": d["descricao"],
                 "oficina": f"R$ {d['oficina']:.2f}",
                 "seguradora": f"R$ {d['seguradora']:.2f}",
-                "diferenca": f"R$ {diferenca:.2f}",
-                "acao": "NEGOCIAR DIFERENCA"
+                "diferenca": f"R$ {diff:.2f}",
+                "acao": "NEGOCIAR"
             })
 
-        elif d["tipo"] == "NAO_ENCONTRADO":
+        else:
             resultado.append({
                 "tipo": "ITEM_NAO_APROVADO",
-                "descricao": d["descricao"],
+                "item": d["descricao"],
                 "oficina": f"R$ {d['oficina']:.2f}",
-                "acao": "VALIDAR COM SEGURADORA"
+                "acao": "COBRAR SEGURADORA"
             })
 
     return resultado
@@ -159,6 +164,11 @@ async def analisar(
 
     divergencias = comparar(itens_oficina, itens_seguradora)
 
-    resultado_final = formatar_saida(divergencias)
-
-    return {"analise": resultado_final}
+    return {
+        "resumo": {
+            "total_itens_oficina": len(itens_oficina),
+            "total_itens_seguradora": len(itens_seguradora),
+            "divergencias": len(divergencias)
+        },
+        "analise": formatar_saida(divergencias)
+    }
