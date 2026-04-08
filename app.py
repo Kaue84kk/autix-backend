@@ -1,174 +1,178 @@
-from fastapi import FastAPI, UploadFile, File
-import pdfplumber
+from flask import Flask, request, jsonify
 import re
 
-app = FastAPI()
+app = Flask(__name__)
 
 # =========================
-# EXTRAIR TEXTO
+# LIMPEZA DE TEXTO (OCR)
 # =========================
-def extrair_texto_pdf(file):
-    texto = ""
-    with pdfplumber.open(file) as pdf:
-        for page in pdf.pages:
-            texto += page.extract_text() or ""
-    return texto
+def normalizar_texto(texto):
+    texto = texto.upper()
 
+    correcoes = {
+        "ALINHAMENO": "ALINHAMENTO",
+        "DIEÇÃO": "DIRECAO",
+        "NEU": "PNEU",
+        "GOODYEA": "GOODYEAR",
+        "MONAGEM": "MONTAGEM",
+        "BALANCEAMENO": "BALANCEAMENTO",
+        "ESACIONAMENO": "ESTACIONAMENTO",
+        "AFEIÇÃO": "AFEICAO",
+        "ODA": "RODA",
+        "ESILHAS": "PASTILHAS",
+        "BOACHEIO": "BORRACHEIRO",
+    }
 
-# =========================
-# IDENTIFICAR LINHA DE PEÇA REAL
-# =========================
-def linha_valida(linha):
+    for errado, certo in correcoes.items():
+        texto = texto.replace(errado, certo)
 
-    if not linha.strip():
-        return False
-
-    # precisa ter código grande
-    if not re.search(r'\b\d{6,}\b', linha):
-        return False
-
-    # precisa ter valor monetário
-    if not re.search(r'R\$\s*\d', linha):
-        return False
-
-    # ignora resumo
-    if any(x in linha for x in ["Total", "Bruto", "Líquido", "%"]):
-        return False
-
-    return True
+    texto = re.sub(r'\s+', ' ', texto)
+    return texto.strip()
 
 
 # =========================
-# EXTRAIR ITENS (VERSÃO LIMPA)
+# CLASSIFICAÇÃO
 # =========================
-def extrair_itens(texto):
-    itens = []
-    linhas = texto.split("\n")
+def classificar_item(nome):
+    palavras_peca = ["PNEU", "KIT", "BUCHA", "PASTILHA", "SENSOR"]
 
-    for linha in linhas:
+    for palavra in palavras_peca:
+        if palavra in nome:
+            return "PECA"
 
-        if not linha_valida(linha):
-            continue
-
-        try:
-            # código
-            codigo = re.search(r'\b\d{6,}\b', linha).group()
-
-            # valor (último valor da linha)
-            valores = re.findall(r'R\$\s*([\d.,]+)', linha)
-            if not valores:
-                continue
-
-            valor = float(valores[-1].replace(".", "").replace(",", "."))
-
-            # descrição limpa
-            descricao = linha
-
-            # remove código
-            descricao = re.sub(r'\b\d{6,}\b', '', descricao)
-
-            # remove valores
-            descricao = re.sub(r'R\$\s*[\d.,]+', '', descricao)
-
-            # remove ruídos
-            descricao = re.sub(r'[TPR\-]+', '', descricao)
-
-            descricao = re.sub(r'\s+', ' ', descricao).strip()
-
-            itens.append({
-                "codigo": codigo,
-                "descricao": descricao,
-                "valor": valor
-            })
-
-        except:
-            continue
-
-    return itens
+    return "MAO_DE_OBRA"
 
 
 # =========================
-# COMPARAÇÃO INTELIGENTE
+# REGRA DE DECISÃO
 # =========================
-def comparar(oficina, seguradora):
-    divergencias = []
-
-    mapa_seg = {item["codigo"]: item for item in seguradora}
-
-    for item_of in oficina:
-
-        item_seg = mapa_seg.get(item_of["codigo"])
-
-        if item_seg:
-            if abs(item_of["valor"] - item_seg["valor"]) > 0.01:
-                divergencias.append({
-                    "tipo": "VALOR_DIFERENTE",
-                    "descricao": item_of["descricao"],
-                    "oficina": item_of["valor"],
-                    "seguradora": item_seg["valor"]
-                })
-        else:
-            divergencias.append({
-                "tipo": "NAO_ENCONTRADO",
-                "descricao": item_of["descricao"],
-                "oficina": item_of["valor"]
-            })
-
-    return divergencias
+def classificar_acao(diferenca):
+    if diferenca < 20:
+        return "IGNORAR", "BAIXA"
+    elif diferenca <= 80:
+        return "NEGOCIAR", "MEDIA"
+    else:
+        return "NEGOCIAR FORTE", "ALTA"
 
 
 # =========================
-# FORMATAÇÃO PROFISSIONAL
+# EXTRAÇÃO DE VALOR (string → float)
 # =========================
-def formatar_saida(divergencias):
+def parse_valor(valor):
+    if isinstance(valor, (int, float)):
+        return float(valor)
+
+    valor = valor.replace("R$", "").replace(",", "").strip()
+    return float(valor)
+
+
+# =========================
+# CÉREBRO V6
+# =========================
+def analisar_v6(itens, total_oficina):
     resultado = []
 
-    for d in divergencias:
+    total_glosa_pecas = 0
+    total_glosa_mo = 0
 
-        if d["tipo"] == "VALOR_DIFERENTE":
-            diff = d["oficina"] - d["seguradora"]
+    for item in itens:
+        nome = normalizar_texto(item.get("item", ""))
+
+        valor_oficina = parse_valor(item.get("oficina", 0))
+        valor_seguradora = parse_valor(item.get("seguradora", 0))
+
+        diferenca = round(valor_oficina - valor_seguradora, 2)
+
+        tipo_item = classificar_item(nome)
+
+        # ITEM NÃO APROVADO
+        if item.get("tipo") == "ITEM_NAO_APROVADO":
+            impacto = valor_oficina
+
+            if tipo_item == "PECA":
+                total_glosa_pecas += impacto
+            else:
+                total_glosa_mo += impacto
 
             resultado.append({
-                "tipo": "DIVERGENCIA_DE_VALOR",
-                "item": d["descricao"],
-                "oficina": f"R$ {d['oficina']:.2f}",
-                "seguradora": f"R$ {d['seguradora']:.2f}",
-                "diferenca": f"R$ {diff:.2f}",
-                "acao": "NEGOCIAR"
+                "item": nome,
+                "tipo": "NAO_APROVADO",
+                "categoria": tipo_item,
+                "valor": impacto,
+                "acao": "COBRAR SEGURADORA",
+                "prioridade": "ALTA"
             })
+            continue
 
+        # DIVERGÊNCIA
+        if diferenca <= 0:
+            continue
+
+        acao, prioridade = classificar_acao(diferenca)
+
+        if acao == "IGNORAR":
+            continue
+
+        if tipo_item == "PECA":
+            total_glosa_pecas += diferenca
         else:
-            resultado.append({
-                "tipo": "ITEM_NAO_APROVADO",
-                "item": d["descricao"],
-                "oficina": f"R$ {d['oficina']:.2f}",
-                "acao": "COBRAR SEGURADORA"
-            })
+            total_glosa_mo += diferenca
 
-    return resultado
+        resultado.append({
+            "item": nome,
+            "tipo": "DIVERGENCIA",
+            "categoria": tipo_item,
+            "oficina": valor_oficina,
+            "seguradora": valor_seguradora,
+            "diferenca": diferenca,
+            "acao": acao,
+            "prioridade": prioridade
+        })
 
+    total_glosa = round(total_glosa_pecas + total_glosa_mo, 2)
+    faturamento_real = round(total_oficina - total_glosa, 2)
 
-# =========================
-# ENDPOINT
-# =========================
-@app.post("/analisar")
-async def analisar(
-    pdf_oficina: UploadFile = File(...),
-    pdf_seguradora: UploadFile = File(...)
-):
-    texto_oficina = extrair_texto_pdf(pdf_oficina.file)
-    texto_seguradora = extrair_texto_pdf(pdf_seguradora.file)
-
-    itens_oficina = extrair_itens(texto_oficina)
-    itens_seguradora = extrair_itens(texto_seguradora)
-
-    divergencias = comparar(itens_oficina, itens_seguradora)
+    # VALIDAÇÃO MATEMÁTICA
+    if round(total_oficina - total_glosa, 2) != faturamento_real:
+        raise Exception("ERRO MATEMÁTICO NO FECHAMENTO")
 
     return {
-        "resumo": {
-            "total_itens_oficina": len(itens_oficina),
-            "total_itens_seguradora": len(itens_seguradora),
-            "divergencias": len(divergencias)
+        "analise": resultado,
+        "totais": {
+            "glosa_pecas": total_glosa_pecas,
+            "glosa_mao_de_obra": total_glosa_mo,
+            "glosa_total": total_glosa
         },
-        "analise": formatar_saida(divergencias)
+        "financeiro": {
+            "total_oficina": total_oficina,
+            "faturamento_real": faturamento_real
+        }
     }
+
+
+# =========================
+# ENDPOINT PRINCIPAL
+# =========================
+@app.route("/analisar", methods=["POST"])
+def analisar():
+    try:
+        data = request.json
+
+        itens = data.get("itens", [])
+        total_oficina = parse_valor(data.get("total_oficina", 0))
+
+        resultado = analisar_v6(itens, total_oficina)
+
+        return jsonify(resultado)
+
+    except Exception as e:
+        return jsonify({
+            "erro": str(e)
+        }), 500
+
+
+# =========================
+# START
+# =========================
+if __name__ == "__main__":
+    app.run(debug=True)
