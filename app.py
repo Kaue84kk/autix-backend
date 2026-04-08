@@ -5,11 +5,8 @@ import re
 
 app = Flask(__name__)
 
-# =========================
-# HTML
-# =========================
 HTML = """
-<h2>AUTIX - Análise Inteligente (V6)</h2>
+<h2>AUTIX - Análise Inteligente</h2>
 
 <form action="/analisar" method="post" enctype="multipart/form-data">
     <p>PDF Oficina:</p>
@@ -26,9 +23,6 @@ HTML = """
 def home():
     return render_template_string(HTML)
 
-# =========================
-# HELPERS
-# =========================
 def limpar_valor(valor):
     try:
         return float(valor.replace("R$", "").replace(".", "").replace(",", "."))
@@ -38,9 +32,6 @@ def limpar_valor(valor):
 def normalizar(txt):
     return re.sub(r'\s+', ' ', txt.upper()).strip()
 
-# =========================
-# PDF
-# =========================
 def extrair_texto(pdf_file):
     texto = ""
     pdf_bytes = pdf_file.read()
@@ -54,9 +45,7 @@ def extrair_texto(pdf_file):
 
     return texto
 
-# =========================
-# EXTRAIR ITENS (SIMPLES)
-# =========================
+# 🔥 FUNÇÃO CORRIGIDA
 def extrair_itens(texto):
     itens = []
     linhas = texto.split("\n")
@@ -64,7 +53,15 @@ def extrair_itens(texto):
     for linha in linhas:
         linha_norm = normalizar(linha)
 
-        if "R$" in linha_norm:
+        # FILTRO DE LIXO
+        if any(p in linha_norm for p in [
+            "TOTAL", "LIQUIDO", "BRUTO", "DESCONTO",
+            "FUNILARIA", "PINTURA", "MECANICA",
+            "SERVICOS", "TAPEÇARIA"
+        ]):
+            continue
+
+        if "R$" in linha_norm and re.search(r"\d{5,}", linha_norm):
             try:
                 valor = limpar_valor(linha_norm.split("R$")[-1])
 
@@ -83,26 +80,18 @@ def extrair_itens(texto):
 
     return itens
 
-# =========================
-# MATCH SIMPLES
-# =========================
 def encontrar_match(item, lista):
     for outro in lista:
         if item["descricao"][:25] in outro["descricao"]:
             return outro
     return None
 
-# =========================
-# V6 - ANÁLISE
-# =========================
 def analisar_v6(itens_o, itens_s):
     divergencias = []
 
     for item_o in itens_o:
-
         item_s = encontrar_match(item_o, itens_s)
 
-        # PEÇA REMOVIDA
         if not item_s:
             divergencias.append({
                 "tipo": "PECA_REMOVIDA",
@@ -111,17 +100,12 @@ def analisar_v6(itens_o, itens_s):
             })
             continue
 
-        # MUDANÇA DE FORNECIMENTO
         if item_o["fornecimento"] != item_s["fornecimento"]:
             divergencias.append({
                 "tipo": "MUDANCA_FORNECIMENTO",
-                "descricao": item_o["descricao"],
-                "oficina": item_o["fornecimento"],
-                "seguradora": item_s["fornecimento"],
-                "acao": "ATENÇÃO"
+                "descricao": item_o["descricao"]
             })
 
-        # GLOSA (SÓ SE FOR DA OFICINA)
         if item_o["fornecimento"] == "OFICINA":
             if item_s["valor"] < item_o["valor"]:
                 divergencias.append({
@@ -135,16 +119,11 @@ def analisar_v6(itens_o, itens_s):
 
     return divergencias
 
-# =========================
-# FINANCEIRO
-# =========================
 def extrair_liquido(texto):
     texto = texto.upper()
 
     padroes = [
         r"L[ÍI]QUIDO GERAL.*?R\$ ?([\d\.,]+)",
-        r"TOTAL L[ÍI]QUIDO.*?R\$ ?([\d\.,]+)",
-        r"VALOR L[ÍI]QUIDO.*?R\$ ?([\d\.,]+)",
         r"TOTAL.*?R\$ ?([\d\.,]+)"
     ]
 
@@ -155,9 +134,6 @@ def extrair_liquido(texto):
 
     return 0.0
 
-# =========================
-# ENDPOINT
-# =========================
 @app.route("/analisar", methods=["POST"])
 def analisar():
     try:
