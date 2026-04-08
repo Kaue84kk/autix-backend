@@ -134,6 +134,28 @@ def extrair_liquido(texto):
 
     return 0.0
 
+# 🔥 NOVO: MÃO DE OBRA
+def extrair_mao_de_obra(texto):
+    texto = texto.upper()
+
+    padroes = {
+        "pintura": r"PINTURA.*?R\$ ?([\d\.,]+)",
+        "reparacao": r"REPARA[ÇC][AÃ]O.*?R\$ ?([\d\.,]+)",
+        "servicos": r"SERVI[ÇC]OS.*?R\$ ?([\d\.,]+)",
+        "total_mo": r"MÃO DE OBRA.*?R\$ ?([\d\.,]+)"
+    }
+
+    resultado = {}
+
+    for chave, padrao in padroes.items():
+        match = re.search(padrao, texto, re.DOTALL)
+        if match:
+            resultado[chave] = limpar_valor(match.group(1))
+        else:
+            resultado[chave] = 0.0
+
+    return resultado
+
 @app.route("/analisar", methods=["POST"])
 def analisar():
     pdf_o = request.files["oficina"]
@@ -149,7 +171,10 @@ def analisar():
 
     liquido_o = extrair_liquido(texto_o)
     liquido_s = extrair_liquido(texto_s)
-    diferenca = round(liquido_o - liquido_s, 2)
+
+    # 🔥 NOVO
+    mao_o = extrair_mao_de_obra(texto_o)
+    mao_s = extrair_mao_de_obra(texto_s)
 
     return render_template_string("""
     <h2>RESULTADO DA ANÁLISE</h2>
@@ -172,6 +197,13 @@ def analisar():
     {% endfor %}
     </ul>
 
+    <h3 style="color:blue;">🔵 MÃO DE OBRA</h3>
+    <p>Pintura: R$ {{mao_o.pintura}} | R$ {{mao_s.pintura}}</p>
+    <p>Reparação: R$ {{mao_o.reparacao}} | R$ {{mao_s.reparacao}}</p>
+    <p>Serviços: R$ {{mao_o.servicos}} | R$ {{mao_s.servicos}}</p>
+    <p><b>Total M.O:</b> R$ {{mao_o.total_mo}} | R$ {{mao_s.total_mo}}</p>
+    <p><b>Diferença:</b> R$ {{mao_o.total_mo - mao_s.total_mo}}</p>
+
     <h3 style="color:green;">💰 RESULTADO FINANCEIRO</h3>
     <p>Oficina: R$ {{oficina}}</p>
     <p>Seguradora: R$ {{seguradora}}</p>
@@ -184,5 +216,7 @@ def analisar():
     removidas=removidas,
     oficina=liquido_o,
     seguradora=liquido_s,
-    diferenca=diferenca
+    diferenca=round(liquido_o - liquido_s, 2),
+    mao_o=mao_o,
+    mao_s=mao_s
     )
