@@ -32,6 +32,20 @@ def limpar_valor(valor):
 def normalizar(txt):
     return re.sub(r'\s+', ' ', txt.upper()).strip()
 
+# 🔥 FUNÇÃO DE LIMPEZA (AGORA NO LUGAR CERTO)
+def limpar_descricao(desc):
+    desc = normalizar(desc)
+
+    desc = re.sub(r"T\s*\d+[,\.]\d+", "", desc)
+    desc = re.sub(r"P\s*\d+[,\.]\d+", "", desc)
+    desc = re.sub(r"\b\d{1}\b", "", desc)
+    desc = re.sub(r"\b\d{5,}\b", "", desc)
+
+    desc = desc.split("OFICINA")[0]
+    desc = desc.split("R$")[0]
+
+    return desc.strip()
+
 def extrair_texto(pdf_file):
     texto = ""
     pdf_bytes = pdf_file.read()
@@ -45,7 +59,6 @@ def extrair_texto(pdf_file):
 
     return texto
 
-# 🔥 FUNÇÃO CORRIGIDA
 def extrair_itens(texto):
     itens = []
     linhas = texto.split("\n")
@@ -53,7 +66,6 @@ def extrair_itens(texto):
     for linha in linhas:
         linha_norm = normalizar(linha)
 
-        # FILTRO DE LIXO
         if any(p in linha_norm for p in [
             "TOTAL", "LIQUIDO", "BRUTO", "DESCONTO",
             "FUNILARIA", "PINTURA", "MECANICA",
@@ -70,7 +82,7 @@ def extrair_itens(texto):
                     fornecimento = "OFICINA"
 
                 itens.append({
-                    "descricao": linha_norm,
+                    "descricao": limpar_descricao(linha_norm),
                     "valor": valor,
                     "fornecimento": fornecimento
                 })
