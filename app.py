@@ -3,9 +3,6 @@ import re
 
 app = Flask(__name__)
 
-# =========================
-# LIMPEZA DE TEXTO (OCR)
-# =========================
 def normalizar_texto(texto):
     texto = texto.upper()
 
@@ -20,7 +17,6 @@ def normalizar_texto(texto):
         "AFEIÇÃO": "AFEICAO",
         "ODA": "RODA",
         "ESILHAS": "PASTILHAS",
-        "BOACHEIO": "BORRACHEIRO",
     }
 
     for errado, certo in correcoes.items():
@@ -30,9 +26,6 @@ def normalizar_texto(texto):
     return texto.strip()
 
 
-# =========================
-# CLASSIFICAÇÃO
-# =========================
 def classificar_item(nome):
     palavras_peca = ["PNEU", "KIT", "BUCHA", "PASTILHA", "SENSOR"]
 
@@ -43,21 +36,6 @@ def classificar_item(nome):
     return "MAO_DE_OBRA"
 
 
-# =========================
-# REGRA DE DECISÃO
-# =========================
-def classificar_acao(diferenca):
-    if diferenca < 20:
-        return "IGNORAR", "BAIXA"
-    elif diferenca <= 80:
-        return "NEGOCIAR", "MEDIA"
-    else:
-        return "NEGOCIAR FORTE", "ALTA"
-
-
-# =========================
-# EXTRAÇÃO DE VALOR (string → float)
-# =========================
 def parse_valor(valor):
     if isinstance(valor, (int, float)):
         return float(valor)
@@ -66,14 +44,8 @@ def parse_valor(valor):
     return float(valor)
 
 
-# =========================
-# CÉREBRO V6
-# =========================
-def analisar_v6(itens, total_oficina):
-    resultado = []
-
-    total_glosa_pecas = 0
-    total_glosa_mo = 0
+def analisar(itens):
+    divergencias = []
 
     for item in itens:
         nome = normalizar_texto(item.get("item", ""))
@@ -81,98 +53,47 @@ def analisar_v6(itens, total_oficina):
         valor_oficina = parse_valor(item.get("oficina", 0))
         valor_seguradora = parse_valor(item.get("seguradora", 0))
 
-        diferenca = round(valor_oficina - valor_seguradora, 2)
-
-        tipo_item = classificar_item(nome)
+        categoria = classificar_item(nome)
 
         # ITEM NÃO APROVADO
         if item.get("tipo") == "ITEM_NAO_APROVADO":
-            impacto = valor_oficina
-
-            if tipo_item == "PECA":
-                total_glosa_pecas += impacto
-            else:
-                total_glosa_mo += impacto
-
-            resultado.append({
+            divergencias.append({
+                "tipo": "ITEM_NAO_APROVADO",
+                "categoria": categoria,
                 "item": nome,
-                "tipo": "NAO_APROVADO",
-                "categoria": tipo_item,
-                "valor": impacto,
-                "acao": "COBRAR SEGURADORA",
-                "prioridade": "ALTA"
+                "valor": valor_oficina
             })
             continue
 
-        # DIVERGÊNCIA
-        if diferenca <= 0:
-            continue
-
-        acao, prioridade = classificar_acao(diferenca)
-
-        if acao == "IGNORAR":
-            continue
-
-        if tipo_item == "PECA":
-            total_glosa_pecas += diferenca
-        else:
-            total_glosa_mo += diferenca
-
-        resultado.append({
-            "item": nome,
-            "tipo": "DIVERGENCIA",
-            "categoria": tipo_item,
-            "oficina": valor_oficina,
-            "seguradora": valor_seguradora,
-            "diferenca": diferenca,
-            "acao": acao,
-            "prioridade": prioridade
-        })
-
-    total_glosa = round(total_glosa_pecas + total_glosa_mo, 2)
-    faturamento_real = round(total_oficina - total_glosa, 2)
-
-    # VALIDAÇÃO MATEMÁTICA
-    if round(total_oficina - total_glosa, 2) != faturamento_real:
-        raise Exception("ERRO MATEMÁTICO NO FECHAMENTO")
+        # VALOR ALTERADO
+        if round(valor_oficina, 2) != round(valor_seguradora, 2):
+            divergencias.append({
+                "tipo": "VALOR_ALTERADO",
+                "categoria": categoria,
+                "item": nome,
+                "oficina": valor_oficina,
+                "seguradora": valor_seguradora,
+                "diferenca": round(valor_oficina - valor_seguradora, 2)
+            })
 
     return {
-        "analise": resultado,
-        "totais": {
-            "glosa_pecas": total_glosa_pecas,
-            "glosa_mao_de_obra": total_glosa_mo,
-            "glosa_total": total_glosa
-        },
-        "financeiro": {
-            "total_oficina": total_oficina,
-            "faturamento_real": faturamento_real
-        }
+        "divergencias": divergencias
     }
 
 
-# =========================
-# ENDPOINT PRINCIPAL
-# =========================
 @app.route("/analisar", methods=["POST"])
-def analisar():
+def analisar_endpoint():
     try:
         data = request.json
-
         itens = data.get("itens", [])
-        total_oficina = parse_valor(data.get("total_oficina", 0))
 
-        resultado = analisar_v6(itens, total_oficina)
+        resultado = analisar(itens)
 
         return jsonify(resultado)
 
     except Exception as e:
-        return jsonify({
-            "erro": str(e)
-        }), 500
+        return jsonify({"erro": str(e)}), 500
 
 
-# =========================
-# START
-# =========================
 if __name__ == "__main__":
     app.run(debug=True)
