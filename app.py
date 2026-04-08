@@ -103,7 +103,7 @@ def analisar_pecas(itens_o, itens_s):
 
     return glosas, removidas
 
-# ------------------ SERVIÇOS (MÃO DE OBRA) ------------------
+# ------------------ SERVIÇOS ------------------
 
 def extrair_servicos(texto):
     servicos = []
@@ -114,7 +114,6 @@ def extrair_servicos(texto):
         if not linha_norm.startswith(("R&I", "R ", "P ")):
             continue
 
-        # extrair horas
         ri = re.search(r"R&I\s*([\d,\.]+)", linha_norm)
         r = re.search(r"\bR\s*([\d,\.]+)", linha_norm)
         p = re.search(r"\bP\s*([\d,\.]+)", linha_norm)
@@ -123,7 +122,6 @@ def extrair_servicos(texto):
         r = float(r.group(1).replace(",", ".")) if r else 0
         p = float(p.group(1).replace(",", ".")) if p else 0
 
-        # limpar descrição
         nome = re.sub(r"(R&I|R|P)\s*[\d,\.]+", "", linha_norm)
         nome = re.sub(r"\b\d+\b", "", nome)
         nome = nome.replace("OFICINA", "").replace("SEGURADORA", "")
@@ -141,34 +139,65 @@ def extrair_servicos(texto):
 
     return servicos
 
+# 🔥 SIMILARIDADE REAL
+def similaridade(a, b):
+    a_set = set(a.split())
+    b_set = set(b.split())
+    return len(a_set & b_set) / max(len(a_set), 1)
+
+# ------------------ COMPARAÇÃO ------------------
+
 def comparar_servicos(serv_o, serv_s):
     removidos = []
     alterados = []
+    substituidos = []
+    usados_s = []
 
     for s_o in serv_o:
         match = None
+        melhor = None
+        score_max = 0
 
         for s_s in serv_s:
+            score = similaridade(s_o["descricao"], s_s["descricao"])
+
+            if score > score_max:
+                score_max = score
+                melhor = s_s
+
             if s_o["descricao"][:30] in s_s["descricao"]:
                 match = s_s
                 break
 
-        if not match:
-            removidos.append(s_o)
-            continue
+        if match:
+            usados_s.append(match)
 
-        if (
-            s_o["ri"] != match["ri"] or
-            s_o["r"] != match["r"] or
-            s_o["p"] != match["p"]
-        ):
-            alterados.append({
-                "descricao": s_o["descricao"],
-                "oficina": s_o,
-                "seguradora": match
-            })
+            if (
+                s_o["ri"] != match["ri"] or
+                s_o["r"] != match["r"] or
+                s_o["p"] != match["p"]
+            ):
+                alterados.append({
+                    "descricao": s_o["descricao"],
+                    "oficina": s_o,
+                    "seguradora": match
+                })
 
-    return removidos, alterados
+        else:
+            # 🔥 AQUI ESTÁ A VIRADA
+            if melhor and score_max > 0.5:
+                substituidos.append({
+                    "oficina": s_o,
+                    "seguradora": melhor
+                })
+                usados_s.append(melhor)
+            else:
+                removidos.append(s_o)
+
+    # 🔵 itens novos da seguradora
+    novos = [s for s in serv_s if s not in usados_s]
+
+    return removidos, alterados, substituidos, novos
 
 # ------------------ MÃO DE OBRA TOTAL ------------------
 
@@ -196,7 +225,8 @@ def analisar():
     # SERVIÇOS
     serv_o = extrair_servicos(texto_o)
     serv_s = extrair_servicos(texto_s)
-    removidos_serv, alterados_serv = comparar_servicos(serv_o, serv_s)
+
+    removidos, alterados, substituidos, novos = comparar_servicos(serv_o, serv_s)
 
     # MÃO DE OBRA TOTAL
     mao_o = extrair_mao_de_obra_total(texto_o)
@@ -205,36 +235,38 @@ def analisar():
     return render_template_string("""
     <h2>RESULTADO DA ANÁLISE</h2>
 
-    <h3 style="color:red;">🔴 GLOSAS (PEÇAS)</h3>
-    <ul>
-    {% for g in glosas %}
-        <li><b>{{g.descricao}}</b><br>
-        Diferença: R$ {{g.diferenca}}</li><br>
-    {% endfor %}
-    </ul>
-
-    <h3 style="color:orange;">🟡 PEÇAS REMOVIDAS</h3>
-    <ul>
-    {% for r in removidas_pecas %}
-        <li>{{r}}</li>
-    {% endfor %}
-    </ul>
-
     <h3 style="color:red;">🔴 SERVIÇOS REMOVIDOS</h3>
     <ul>
-    {% for r in removidos_serv %}
+    {% for r in removidos %}
         <li><b>{{r.descricao}}</b></li>
     {% endfor %}
     </ul>
 
     <h3 style="color:blue;">🔵 SERVIÇOS ALTERADOS</h3>
     <ul>
-    {% for a in alterados_serv %}
+    {% for a in alterados %}
         <li>
         <b>{{a.descricao}}</b><br>
         Oficina: R&I {{a.oficina.ri}} | R {{a.oficina.r}} | P {{a.oficina.p}}<br>
         Seguradora: R&I {{a.seguradora.ri}} | R {{a.seguradora.r}} | P {{a.seguradora.p}}
         </li><br>
+    {% endfor %}
+    </ul>
+
+    <h3 style="color:purple;">🟣 SUBSTITUÍDOS (PEGADINHA)</h3>
+    <ul>
+    {% for s in substituidos %}
+        <li>
+        <b>Oficina:</b> {{s.oficina.descricao}}<br>
+        <b>Seguradora:</b> {{s.seguradora.descricao}}
+        </li><br>
+    {% endfor %}
+    </ul>
+
+    <h3 style="color:green;">🟢 NOVOS (INSERIDOS PELA SEGURADORA)</h3>
+    <ul>
+    {% for n in novos %}
+        <li><b>{{n.descricao}}</b></li>
     {% endfor %}
     </ul>
 
@@ -246,13 +278,13 @@ def analisar():
     <br><br>
     <a href="/">Voltar</a>
     """,
-    glosas=glosas,
-    removidas_pecas=removidas_pecas,
-    removidos_serv=removidos_serv,
-    alterados_serv=alterados_serv,
+    removidos=removidos,
+    alterados=alterados,
+    substituidos=substituidos,
+    novos=novos,
     mao_o=mao_o,
     mao_s=mao_s
     )
-    
+
 if __name__ == "__main__":
     app.run(debug=True)
