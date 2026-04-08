@@ -25,170 +25,121 @@ def home():
 
 # ---------------- HELPERS ----------------
 
-def normalizar(txt):
-    return re.sub(r'\s+', ' ', txt.upper()).strip()
-
-def limpar_valor(valor):
+def limpar_valor(v):
     try:
-        return float(valor.replace("R$", "").replace(".", "").replace(",", "."))
+        return float(v.replace("R$", "").replace(".", "").replace(",", "."))
     except:
         return 0.0
 
-def extrair_texto(pdf_file):
-    texto = ""
+def normalizar(txt):
+    return re.sub(r'\s+', ' ', str(txt).upper()).strip()
+
+# ---------------- EXTRAÇÃO POR TABELA ----------------
+
+def extrair_tabela(pdf_file):
+    dados = []
+
     pdf_bytes = pdf_file.read()
     pdf_stream = io.BytesIO(pdf_bytes)
 
     with pdfplumber.open(pdf_stream) as pdf:
         for page in pdf.pages:
-            conteudo = page.extract_text()
-            if conteudo:
-                texto += conteudo + "\n"
+            tables = page.extract_tables()
 
-    return texto
+            for table in tables:
+                for row in table:
+                    if not row:
+                        continue
 
-# ---------------- LIMPEZA DESCRIÇÃO ----------------
+                    linha = [normalizar(c) for c in row if c]
 
-def limpar_descricao(nome):
-    nome = normalizar(nome)
+                    if len(linha) < 3:
+                        continue
 
-    nome = re.sub(r"(R&I|R|P)\s*[\d,\.]+", "", nome)
-    nome = re.sub(r"\b\d+\b", "", nome)
-    nome = nome.replace("OFICINA", "").replace("SEGURADORA", "")
-    nome = nome.strip()
+                    texto = " ".join(linha)
 
-    # remove lixo
-    if nome in ["", "-", "--", "---"]:
-        return None
+                    # identificar tipo
+                    tipo = None
+                    if "R&I" in texto:
+                        tipo = "RI"
+                    elif re.search(r"\bR\b", texto):
+                        tipo = "R"
+                    elif re.search(r"\bP\b", texto):
+                        tipo = "P"
 
-    if len(nome) < 4:
-        return None
+                    # valor
+                    valor = 0
+                    for c in linha:
+                        if "R$" in c:
+                            valor = limpar_valor(c)
 
-    return nome
+                    # descrição
+                    desc = texto
+                    desc = re.sub(r"R&I|R|P", "", desc)
+                    desc = re.sub(r"\d+[,\.]\d+", "", desc)
+                    desc = re.sub(r"\b\d+\b", "", desc)
+                    desc = desc.replace("R$", "").strip()
 
-# ---------------- PALAVRA CHAVE ----------------
+                    if len(desc) < 5:
+                        continue
 
-def palavra_chave(nome):
-    palavras = nome.split()
+                    dados.append({
+                        "tipo": tipo,
+                        "descricao": desc,
+                        "valor": valor
+                    })
 
-    ignorar = {"DE", "DA", "DO", "TRAS", "ESQ", "DIR", "COMPONENTES"}
-
-    palavras = [p for p in palavras if p not in ignorar]
-
-    return palavras[0] if palavras else nome
-
-# ---------------- SERVIÇOS ----------------
-
-def extrair_servicos(texto):
-    servicos = []
-
-    for linha in texto.split("\n"):
-        linha_norm = normalizar(linha)
-
-        if not linha_norm.startswith(("R&I", "R ", "P ")):
-            continue
-
-        ri = re.search(r"R&I\s*([\d,\.]+)", linha_norm)
-        r = re.search(r"\bR\s*([\d,\.]+)", linha_norm)
-        p = re.search(r"\bP\s*([\d,\.]+)", linha_norm)
-
-        ri = float(ri.group(1).replace(",", ".")) if ri else 0
-        r = float(r.group(1).replace(",", ".")) if r else 0
-        p = float(p.group(1).replace(",", ".")) if p else 0
-
-        nome = limpar_descricao(linha_norm)
-
-        if not nome:
-            continue
-
-        servicos.append({
-            "descricao": nome,
-            "chave": palavra_chave(nome),
-            "ri": ri,
-            "r": r,
-            "p": p
-        })
-
-    return servicos
-
-# ---------------- MATCH INTELIGENTE ----------------
-
-def match_servico(s_o, lista):
-    melhor = None
-    score_max = 0
-
-    for s in lista:
-        score = 0
-
-        if s_o["chave"] == s["chave"]:
-            score += 2
-
-        intersecao = len(set(s_o["descricao"].split()) & set(s["descricao"].split()))
-        score += intersecao
-
-        if score > score_max:
-            score_max = score
-            melhor = s
-
-    if score_max >= 2:
-        return melhor
-
-    return None
+    return dados
 
 # ---------------- COMPARAÇÃO ----------------
 
-def comparar_servicos(serv_o, serv_s):
+def comparar(lista_o, lista_s):
+    glosas = []
     removidos = []
-    alterados = []
-    substituidos = []
-    usados_s = []
+    novos = []
 
-    for s_o in serv_o:
-        match = match_servico(s_o, serv_s)
+    for o in lista_o:
+        match = None
 
-        if match:
-            usados_s.append(match)
+        for s in lista_s:
+            if o["descricao"][:30] in s["descricao"]:
+                match = s
+                break
 
-            if (
-                s_o["ri"] != match["ri"] or
-                s_o["r"] != match["r"] or
-                s_o["p"] != match["p"]
-            ):
-                alterados.append({
-                    "descricao": s_o["descricao"],
-                    "oficina": s_o,
-                    "seguradora": match,
-                    "diff": {
-                        "ri": round(match["ri"] - s_o["ri"], 2),
-                        "r": round(match["r"] - s_o["r"], 2),
-                        "p": round(match["p"] - s_o["p"], 2),
-                    }
+        if not match:
+            removidos.append(o)
+        else:
+            if o["valor"] > match["valor"]:
+                glosas.append({
+                    "descricao": o["descricao"],
+                    "oficina": o["valor"],
+                    "seguradora": match["valor"],
+                    "diff": round(o["valor"] - match["valor"], 2)
                 })
 
-        else:
-            # tentativa de substituição (mesma chave)
-            for s in serv_s:
-                if s_o["chave"] == s["chave"]:
-                    substituidos.append({
-                        "oficina": s_o,
-                        "seguradora": s
-                    })
-                    usados_s.append(s)
-                    break
-            else:
-                removidos.append(s_o)
+    for s in lista_s:
+        if not any(s["descricao"][:30] in o["descricao"] for o in lista_o):
+            novos.append(s)
 
-    novos = [s for s in serv_s if s not in usados_s]
+    return glosas, removidos, novos
 
-    return removidos, alterados, substituidos, novos
+# ---------------- TOTAL ----------------
 
-# ---------------- MÃO DE OBRA TOTAL ----------------
-
-def extrair_mao_de_obra_total(texto):
+def extrair_total(texto):
     match = re.search(r"MÃO DE OBRA.*R\$ ?([\d\.,]+)", texto.upper())
     if match:
         return limpar_valor(match.group(1))
     return 0.0
+
+def extrair_texto(pdf_file):
+    texto = ""
+    pdf_file.seek(0)
+    with pdfplumber.open(pdf_file) as pdf:
+        for p in pdf.pages:
+            t = p.extract_text()
+            if t:
+                texto += t
+    return texto
 
 # ---------------- ROUTE ----------------
 
@@ -197,41 +148,32 @@ def analisar():
     pdf_o = request.files["oficina"]
     pdf_s = request.files["seguradora"]
 
-    texto_o = extrair_texto(pdf_o)
-    texto_s = extrair_texto(pdf_s)
+    dados_o = extrair_tabela(pdf_o)
+    pdf_s.seek(0)
+    dados_s = extrair_tabela(pdf_s)
 
-    serv_o = extrair_servicos(texto_o)
-    serv_s = extrair_servicos(texto_s)
+    glosas, removidos, novos = comparar(dados_o, dados_s)
 
-    removidos, alterados, substituidos, novos = comparar_servicos(serv_o, serv_s)
+    pdf_o.seek(0)
+    pdf_s.seek(0)
 
-    mao_o = extrair_mao_de_obra_total(texto_o)
-    mao_s = extrair_mao_de_obra_total(texto_s)
+    mao_o = extrair_total(extrair_texto(pdf_o))
+    mao_s = extrair_total(extrair_texto(pdf_s))
 
     return render_template_string("""
     <h2>RESULTADO DA ANÁLISE</h2>
 
-    <h3 style="color:blue;">🔵 SERVIÇOS ALTERADOS</h3>
-    {% for a in alterados %}
-        <p>
-        <b>{{a.descricao}}</b><br>
-        Oficina → R&I {{a.oficina.ri}} | R {{a.oficina.r}} | P {{a.oficina.p}}<br>
-        Seguradora → R&I {{a.seguradora.ri}} | R {{a.seguradora.r}} | P {{a.seguradora.p}}<br>
-        🔻 Corte → R&I {{a.diff.ri}} | R {{a.diff.r}} | P {{a.diff.p}}
-        </p>
+    <h3 style="color:red;">🔴 GLOSAS</h3>
+    {% for g in glosas %}
+        <p><b>{{g.descricao}}</b><br>
+        Oficina: R$ {{g.oficina}}<br>
+        Seguradora: R$ {{g.seguradora}}<br>
+        Diferença: R$ {{g.diff}}</p>
     {% endfor %}
 
-    <h3 style="color:red;">🔴 REMOVIDOS</h3>
+    <h3 style="color:orange;">🟡 REMOVIDOS</h3>
     {% for r in removidos %}
         <p>{{r.descricao}}</p>
-    {% endfor %}
-
-    <h3 style="color:purple;">🟣 SUBSTITUÍDOS</h3>
-    {% for s in substituidos %}
-        <p>
-        Oficina: {{s.oficina.descricao}}<br>
-        Seguradora: {{s.seguradora.descricao}}
-        </p>
     {% endfor %}
 
     <h3 style="color:green;">🟢 NOVOS</h3>
@@ -243,13 +185,9 @@ def analisar():
     <p>Oficina: R$ {{mao_o}}</p>
     <p>Seguradora: R$ {{mao_s}}</p>
     <p><b>Diferença: R$ {{mao_o - mao_s}}</b></p>
-
-    <br><br>
-    <a href="/">Voltar</a>
     """,
-    alterados=alterados,
+    glosas=glosas,
     removidos=removidos,
-    substituidos=substituidos,
     novos=novos,
     mao_o=mao_o,
     mao_s=mao_s
