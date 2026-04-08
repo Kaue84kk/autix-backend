@@ -12,27 +12,38 @@ def extrair_texto_pdf(file):
 
 def extrair_itens(texto):
     itens = []
-
     linhas = texto.split("\n")
 
     for linha in linhas:
-        if "R$" in linha:
 
-            try:
-                descricao = linha
+        # só pega linhas relevantes
+        if "R$" not in linha:
+            continue
 
-                valor = None
-                match = re.search(r'R\$\s*([\d,.]+)', linha)
-                if match:
-                    valor = float(match.group(1).replace(".", "").replace(",", "."))
+        # ignora totais e resumos
+        if "TOTAL" in linha.upper():
+            continue
 
-                itens.append({
-                    "descricao": descricao,
-                    "valor": valor
-                })
-
-            except:
+        try:
+            # tenta pegar valor
+            match = re.search(r'R\$\s*([\d.,]+)', linha)
+            if not match:
                 continue
+
+            valor = float(match.group(1).replace(".", "").replace(",", "."))
+
+            # tenta pegar código da peça (número grande)
+            codigo_match = re.search(r'\b\d{6,}\b', linha)
+            codigo = codigo_match.group(0) if codigo_match else linha
+
+            itens.append({
+                "codigo": codigo,
+                "descricao": linha.strip(),
+                "valor": valor
+            })
+
+        except:
+            continue
 
     return itens
 
