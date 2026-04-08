@@ -16,23 +16,19 @@ def extrair_itens(texto):
 
     for linha in linhas:
 
-        # só pega linhas relevantes
-        if "R$" not in linha:
-            continue
-
-        # ignora totais e resumos
-        if "TOTAL" in linha.upper():
+        # agora aceita qualquer linha com número (não só R$)
+        if not any(char.isdigit() for char in linha):
             continue
 
         try:
-            # tenta pegar valor
-            match = re.search(r'R\$\s*([\d.,]+)', linha)
+            # tenta achar valor com ou sem R$
+            match = re.search(r'(\d+[.,]\d{2})', linha)
             if not match:
                 continue
 
             valor = float(match.group(1).replace(".", "").replace(",", "."))
 
-            # tenta pegar código da peça (número grande)
+            # tenta pegar código grande
             codigo_match = re.search(r'\b\d{6,}\b', linha)
             codigo = codigo_match.group(0) if codigo_match else linha
 
