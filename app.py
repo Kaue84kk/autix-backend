@@ -23,6 +23,8 @@ HTML = """
 def home():
     return render_template_string(HTML)
 
+# ------------------ HELPERS ------------------
+
 def limpar_valor(valor):
     try:
         return float(valor.replace("R$", "").replace(".", "").replace(",", "."))
@@ -45,107 +47,112 @@ def extrair_texto(pdf_file):
 
     return texto
 
-# 🔥 PEÇAS (mantido)
-def limpar_descricao(desc):
-    desc = normalizar(desc)
-    desc = re.sub(r"\b\d{5,}\b", "", desc)
-    desc = desc.split("OFICINA")[0]
-    desc = desc.split("R$")[0]
-    return desc.strip()
+# ------------------ VALORES HORA ------------------
 
-def extrair_itens(texto):
-    itens = []
-    for linha in texto.split("\n"):
-        linha_norm = normalizar(linha)
+def extrair_valores_hora(texto):
+    mao = re.search(r"MÃO DE OBRA\s*R\$ ?([\d\.,]+)", texto.upper())
+    rep = re.search(r"REPARAÇÃO\s*R\$ ?([\d\.,]+)", texto.upper())
+    pin = re.search(r"PINTURA.*R\$ ?([\d\.,]+)", texto.upper())
 
-        if "R$" in linha_norm and re.search(r"\d{5,}", linha_norm):
-            valor = limpar_valor(linha_norm.split("R$")[-1])
+    return {
+        "mao": limpar_valor(mao.group(1)) if mao else 0,
+        "rep": limpar_valor(rep.group(1)) if rep else 0,
+        "pin": limpar_valor(pin.group(1)) if pin else 0
+    }
 
-            fornecimento = "SEGURADORA"
-            if "OFICINA" in linha_norm:
-                fornecimento = "OFICINA"
+# ------------------ SERVIÇOS ------------------
 
-            itens.append({
-                "descricao": limpar_descricao(linha_norm),
-                "valor": valor,
-                "fornecimento": fornecimento
-            })
-
-    return itens
-
-def encontrar_match(item, lista):
-    for outro in lista:
-        if item["descricao"][:20] in outro["descricao"]:
-            return outro
-    return None
-
-def analisar_pecas(itens_o, itens_s):
-    glosas = []
-    removidas = []
-
-    for item_o in itens_o:
-        item_s = encontrar_match(item_o, itens_s)
-
-        if not item_s:
-            removidas.append(item_o["descricao"])
-            continue
-
-        if item_o["valor"] > item_s["valor"]:
-            glosas.append({
-                "descricao": item_o["descricao"],
-                "oficina": item_o["valor"],
-                "seguradora": item_s["valor"],
-                "diferenca": round(item_o["valor"] - item_s["valor"], 2)
-            })
-
-    return glosas, removidas
-
-# 🔥 NOVO: SERVIÇOS (MÃO DE OBRA REAL)
-def extrair_servicos(texto):
+def extrair_servicos(texto, valores_hora):
     servicos = []
 
     for linha in texto.split("\n"):
         linha_norm = normalizar(linha)
 
-        if linha_norm.startswith(("R&I", "R ", "P ")):
-            try:
-                nome = re.sub(r"R&I|R|P|\d+[,\.]\d+", "", linha_norm)
-                nome = nome.strip()
+        if not linha_norm.startswith(("R&I", "R ", "P ")):
+            continue
 
-                valor = re.findall(r"\d+[,\.]\d+", linha_norm)
-                valor = float(valor[0].replace(",", ".")) if valor else 0
+        # extrair horas
+        ri = re.search(r"R&I\s*([\d,\.]+)", linha_norm)
+        r = re.search(r"\bR\s*([\d,\.]+)", linha_norm)
+        p = re.search(r"\bP\s*([\d,\.]+)", linha_norm)
 
-                servicos.append({
-                    "descricao": nome,
-                    "valor": valor
-                })
-            except:
-                continue
+        ri = float(ri.group(1).replace(",", ".")) if ri else 0
+        r = float(r.group(1).replace(",", ".")) if r else 0
+        p = float(p.group(1).replace(",", ".")) if p else 0
+
+        # limpar descrição
+        nome = re.sub(r"(R&I|R|P)\s*[\d,\.]+", "", linha_norm)
+        nome = re.sub(r"\b\d+\b", "", nome)
+        nome = nome.replace("OFICINA", "").strip()
+
+        if len(nome) < 5:
+            continue
+
+        valor_total = (
+            ri * valores_hora["mao"] +
+            r * valores_hora["rep"] +
+            p * valores_hora["pin"]
+        )
+
+        servicos.append({
+            "descricao": nome,
+            "valor": round(valor_total, 2)
+        })
 
     return servicos
+
+# ------------------ MATCH INTELIGENTE ------------------
+
+def similaridade(a, b):
+    a = set(a.split())
+    b = set(b.split())
+    return len(a & b) / max(len(a), 1)
+
+def encontrar_match(serv, lista):
+    melhor = None
+    score_max = 0
+
+    for s in lista:
+        score = similaridade(serv["descricao"], s["descricao"])
+        if score > score_max:
+            score_max = score
+            melhor = s
+
+    if score_max > 0.5:
+        return melhor
+
+    return None
+
+# ------------------ COMPARAÇÃO ------------------
 
 def comparar_servicos(serv_o, serv_s):
     divergencias = []
 
     for s_o in serv_o:
-        for s_s in serv_s:
-            if s_o["descricao"][:25] in s_s["descricao"]:
-                if s_o["valor"] > s_s["valor"]:
-                    divergencias.append({
-                        "descricao": s_o["descricao"],
-                        "oficina": s_o["valor"],
-                        "seguradora": s_s["valor"],
-                        "diferenca": round(s_o["valor"] - s_s["valor"], 2)
-                    })
+        s_s = encontrar_match(s_o, serv_s)
+
+        if not s_s:
+            continue
+
+        if s_o["valor"] > s_s["valor"]:
+            divergencias.append({
+                "descricao": s_o["descricao"],
+                "oficina": s_o["valor"],
+                "seguradora": s_s["valor"],
+                "diferenca": round(s_o["valor"] - s_s["valor"], 2)
+            })
 
     return divergencias
 
-# 🔥 CORREÇÃO REAL: MÃO DE OBRA TOTAL
+# ------------------ MÃO DE OBRA TOTAL ------------------
+
 def extrair_mao_de_obra_total(texto):
     match = re.search(r"L[ÍI]QUIDO DE MÃO DE OBRA\s*\+\s*R\$ ?([\d\.,]+)", texto.upper())
     if match:
         return limpar_valor(match.group(1))
     return 0.0
+
+# ------------------ ROUTE ------------------
 
 @app.route("/analisar", methods=["POST"])
 def analisar():
@@ -155,43 +162,29 @@ def analisar():
     texto_o = extrair_texto(pdf_o)
     texto_s = extrair_texto(pdf_s)
 
-    # PEÇAS
-    itens_o = extrair_itens(texto_o)
-    itens_s = extrair_itens(texto_s)
-    glosas, removidas = analisar_pecas(itens_o, itens_s)
+    valores_o = extrair_valores_hora(texto_o)
+    valores_s = extrair_valores_hora(texto_s)
 
-    # SERVIÇOS (🔥 NOVO)
-    serv_o = extrair_servicos(texto_o)
-    serv_s = extrair_servicos(texto_s)
-    divergencias_servicos = comparar_servicos(serv_o, serv_s)
+    serv_o = extrair_servicos(texto_o, valores_o)
+    serv_s = extrair_servicos(texto_s, valores_s)
 
-    # MÃO DE OBRA REAL
+    divergencias = comparar_servicos(serv_o, serv_s)
+
     mao_o = extrair_mao_de_obra_total(texto_o)
     mao_s = extrair_mao_de_obra_total(texto_s)
 
     return render_template_string("""
     <h2>RESULTADO DA ANÁLISE</h2>
 
-    <h3 style="color:red;">🔴 GLOSAS (PEÇAS)</h3>
-    <ul>
-    {% for g in glosas %}
-        <li><b>{{g.descricao}}</b><br>
-        Diferença: R$ {{g.diferenca}}</li><br>
-    {% endfor %}
-    </ul>
-
     <h3 style="color:blue;">🔵 GLOSAS (MÃO DE OBRA)</h3>
     <ul>
     {% for s in servicos %}
-        <li><b>{{s.descricao}}</b><br>
-        Diferença: R$ {{s.diferenca}}</li><br>
-    {% endfor %}
-    </ul>
-
-    <h3 style="color:orange;">🟡 REMOVIDAS</h3>
-    <ul>
-    {% for r in removidas %}
-        <li>{{r}}</li>
+        <li>
+        <b>{{s.descricao}}</b><br>
+        Oficina: R$ {{s.oficina}}<br>
+        Seguradora: R$ {{s.seguradora}}<br>
+        Diferença: <b style="color:red;">R$ {{s.diferenca}}</b>
+        </li><br>
     {% endfor %}
     </ul>
 
@@ -203,9 +196,7 @@ def analisar():
     <br><br>
     <a href="/">Voltar</a>
     """,
-    glosas=glosas,
-    removidas=removidas,
-    servicos=divergencias_servicos,
+    servicos=divergencias,
     mao_o=mao_o,
     mao_s=mao_s
     )
